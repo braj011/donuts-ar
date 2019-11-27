@@ -1,7 +1,3 @@
-/**
- * (c) Facebook, Inc. and its affiliates. Confidential and proprietary.
- */
-
 //==============================================================================
 // Welcome to scripting in Spark AR Studio! Helpful links:
 //
@@ -12,22 +8,27 @@
 //==============================================================================
 
 // How to load in modules
-const Diagnostics = require('Diagnostics')
-const Reactive = require('Reactive')
+const console = require('Diagnostics')
+const R = require('Reactive')
+const Shaders = require('Shaders')
 const Scene = require('Scene')
 const root = Scene.root
 const Animation = require('Animation')
 const FaceTracking = require('FaceTracking')
 const Time = require('Time')
 const Audio = require('Audio')
+const Materials = require('Materials')
+const Textures = require('Textures')
+const Patches = require('Patches')
+const camera = root.child('Device').child('Camera')
 
 // ---------------------------- util --------------------------------
 
-const log = str => Diagnostics.log(str)
+const log = str => console.log(str)
 
 const toggle = (element, hide) => (element.hidden = hide)
-const hide = element => toggle(element, true)
 const show = element => toggle(element, false)
+const hide = element => toggle(element, true)
 
 // Not using yet
 const showMultiple = elements => elements.forEach(show)
@@ -42,7 +43,6 @@ const randomNegativePostiive = num => {
 }
 
 // Update Text
-
 const updateText = (element, text) => {
   if (typeof text !== 'string') {
     text = text.toString()
@@ -53,7 +53,45 @@ const updateText = (element, text) => {
 const randomElement = elements => elements[randomNum(0, elements.length)]
 const retrieveNonActive = elements => elements.filter(e => !e.active)
 
+const tween = (driverParams, sampler, from, to, onComplete) => {
+  const driver = Animation.timeDriver(driverParams)
+  const animSampler = Animation.samplers[sampler](from, to)
+  const signal = Animation.animate(driver, animSampler)
+  driver.start()
+  if (onComplete) driver.onCompleted().subscribe(onComplete)
+  return { signal: signal, driver: driver }
+}
+
+const scaleTween = (element, driverParams, sampler, from, to, axisArray) => {
+  const anim = tween(driverParams, sampler, from, to)
+  axisArray.forEach(axis => (element.transform['scale' + axis.toUpperCase()] = anim.signal))
+}
+
+const bounce = (element, duration, from, to) => {
+  const driverParameters = {
+    durationMilliseconds: duration / 2,
+    loopCount: 2,
+    mirror: true
+  }
+  return scaleTween(element, driverParameters, 'easeInOutQuad', from, to, ['x', 'y'])
+}
+
+const alphaTween = (material, duration, alpha1, alpha2) => {
+  const driverParameters = {
+    durationMilliseconds: duration,
+    loopCount: 1,
+    mirror: false
+  }
+  const anim = tween(driverParameters, 'linear', alpha1, alpha2)
+  const alpha = anim.signal
+  console.watch('alpha', alpha)
+  const colorMix = R.mix(color1, color2, alpha)
+  material.setTexture(colorMix, { textureSlotName: textureSlot })
+}
+
 // ------------------------ end of util -----------------------------
+
+// ------------------------ Game settings  --------------------------
 
 const donutsContainer = root.find('Donuts')
 const donuts = []
@@ -73,10 +111,19 @@ const chomp = Audio.getPlaybackController('chomp')
 let isChompAudioPlaying = false
 
 // SCORE TEXT
-let scorePlusContainer = root.find('scorePlusContainer')
 let scoreText = root.find('ScoreText')
+let scoreMat = Materials.get('scoreTextMaterial')
+const textureSlot = Shaders.DefaultMaterialTextures.DIFFUSE
+
+const color1 = R.pack4(0, 0, 0, 1)
+const color2 = R.pack4(0, 255, 0, 1)
 
 // ---------------------------- Levels parameters -------------------------
+
+let levelTextCanvas = camera.find('LevelTextCanvas')
+let levelTextYStart = -200
+let levelText = root.find('LevelText')
+// need to find the transform of this - set the initial x,y
 
 const level1 = {
   animationTime: 3000,
@@ -104,6 +151,23 @@ const resetDonut = d => {
   }
 }
 
+const checkCollision = (mouthLastPosX, mouthLastPosY) => {
+  donuts.forEach(donut => {
+    const donutLastPosX = donut.element.transform.x.pinLastValue()
+    const donutLastPosY = donut.element.transform.y.pinLastValue()
+
+    donut.lastX = donutLastPosX
+    donut.lastY = donutLastPosY
+  })
+
+  // checking if any of the donuts have collided
+  donuts.forEach(donut => {
+    if (collision(donut.lastX, donut.lastY, mouthLastPosX, mouthLastPosY, collisionDistance) && donut.eaten === false) {
+      donutCollision(donut)
+    }
+  })
+}
+
 const donutCollision = d => {
   if (isChompAudioPlaying) {
     chomp.reset()
@@ -112,11 +176,14 @@ const donutCollision = d => {
     isChompAudioPlaying = true
     chomp.setPlaying(isChompAudioPlaying)
   }
+  bounce(scoreText, 1000, 1, 2)
+  alphaTween(scoreMat, 200, 0, 1)
+  alphaTween(scoreMat, 200, 1, 0)
+
   d.eaten = true
   hide(d.element)
   resetDonut(d)
   score += scoreIncrement
-
   updateText(scoreText, score)
 }
 
@@ -165,7 +232,7 @@ const dropDonut = (donut, animationTime) => {
   donutTransform.x = randomNegPosX
 
   // rotate the donut
-  const rotateDonutXSampler = Animation.samplers.easeInCubic(0, 20)
+  const rotateDonutXSampler = Animation.samplers.linear(0, 20)
   const donutRotateSignal = Animation.animate(timeDriver, rotateDonutXSampler)
   donutTransform.rotationX = donutRotateSignal
 
@@ -196,23 +263,6 @@ const mouthSub = mouthOpen.monitor().subscribe(e => {
   }
 })
 
-const checkCollision = (mouthLastPosX, mouthLastPosY) => {
-  donuts.forEach(donut => {
-    const donutLastPosX = donut.element.transform.x.pinLastValue()
-    const donutLastPosY = donut.element.transform.y.pinLastValue()
-
-    donut.lastX = donutLastPosX
-    donut.lastY = donutLastPosY
-  })
-
-  // checking if any of the donuts have collided
-  donuts.forEach(donut => {
-    if (collision(donut.lastX, donut.lastY, mouthLastPosX, mouthLastPosY, collisionDistance) && donut.eaten === false) {
-      donutCollision(donut)
-    }
-  })
-}
-
 const animateDonuts = (donuts, animationTime, spawnDelay) => {
   const nonActiveDonuts = retrieveNonActive(donuts)
   if (!nonActiveDonuts.length) {
@@ -238,57 +288,41 @@ const animateDonuts = (donuts, animationTime, spawnDelay) => {
 
 const startGame = () => {
   gameState = 'playing'
+  updateText(scoreText, 0)
   // start with the first level values
   animateDonuts(donuts, levels[currentLevel].animationTime, levels[currentLevel].spawnDelay)
 }
 
-const initGame = () => {
-  initDonuts(donuts)
-  show(donutsContainer)
-  currentLevel = 0 // which means level 1, when indexing
-  updateText(scoreText, 0)
-  gameState = 'not_started'
-  // randomizeDonuts(donuts)  - not sure I need one...
-  startGame()
+const countdown = () => {
+  let sec = 3
+  Time.setInterval(() => {
+    updateText(levelText, sec)
+    sec -= 1
+    if (sec < 0) {
+      hide(levelTextCanvas)
+      Time.clearInterval
+    }
+  }, 1000)
 }
 
-// THIS STARTS THE GAME // but only once a  face has been found
-// only do this once
-FaceTracking.count.trigger(1).subscribe(e => {
+const initGame = () => {
+  updateText(scoreText, 'Open mouth to catch')
+  initDonuts(donuts)
+  levelTextCanvas.y = levelTextYStart
+  show(levelTextCanvas)
+  countdown()
+  show(donutsContainer)
+  currentLevel = 0 // which means level 1, when indexing
+  gameState = 'not_started'
   Time.setTimeout(() => {
-    initGame()
-  }, 1000)
+    startGame()
+  }, 3500)
+}
+
+// THIS STARTS THE GAME // but only once a  face has been found - and is only triggered once anyway  trigger(1)
+FaceTracking.count.trigger(1).subscribe(e => {
+  initGame()
 })
 
 hide(donutsContainer)
-
-// ---------CODE THAT IS BEING USED / HAS BEEN REFACTORED-----------
-
-// const donutYSampler = Animation.samplers.linear(0.5, -0.5)
-// const donutDropAnimation = Animation.animate(timeDriver, donutYSampler)
-
-//  --------- ROTATION STUFF - may be partly used later on ---------
-
-// const rotateDonutXSampler = Animation.samplers.linear(0, 10)
-// const donutRotateAnimation = Animation.animate(timeDriver, rotateDonutXSampler)
-// donut1Transform.rotationX = donutRotateAnimation
-// donut1Transform.x = x
-
-// --------------OLD CODE---------------
-
-// const randomiseXValue = () => {
-//   let x = Math.random() * 0.3 - 0.15
-//   return x
-// }
-
-// const update = () => {
-//   x = randomiseXValue()
-//   donut1Transform.x = x
-//   show(donut1)
-// }
-
-// const timeDriver = Animation.timeDriver({
-//   durationMilliseconds: 3000, // duration of drop from top to bottom
-//   loopCount: Infinity,
-//   mirror: false
-// })
+hide(levelTextCanvas)
